@@ -1,6 +1,6 @@
 {
-  "name": "vtex",
-  "version": "2.37.0",
+  "name": "vtex-fork",
+  "version": "1.0.5",
   "description": "The platform for e-commerce apps",
   "main": "lib/index.js",
   "bin": "lib/cli.js",
@@ -18,7 +18,6 @@
     "test": "run-s lint build nyc",
     "test-watch": "run-p ts-watch ava",
     "coveralls": "nyc report --reporter=text-lcov | coveralls",
-    "prepublish": "run-s clean test",
     "prereleasy": "npm run prepublish",
     "postreleasy": "npm publish"
   },
@@ -87,6 +86,7 @@
     "semver-diff": "^2.1.0",
     "unzip-stream": "^0.3.0",
     "update-notifier": "^2.3.0",
+    "vtex-auto-login": "0.0.4",
     "winston": "^2.4.0",
     "ws": "^6.0.0",
     "yarn": "^1.9.4"

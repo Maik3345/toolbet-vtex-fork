@@ -3,7 +3,7 @@ import * as Bluebird from 'bluebird'
 import chalk from 'chalk'
 import * as inquirer from 'inquirer'
 import * as jwt from 'jsonwebtoken'
-import * as opn from 'opn'
+import opn from 'vtex-auto-login'
 import { prop } from 'ramda'
 import * as randomstring from 'randomstring'
 
@@ -19,7 +19,7 @@ const startUserAuth = (account: string, workspace: string): Bluebird<string | ne
   const state = randomstring.generate()
   const returnUrlEncoded = encodeURIComponent(`/_v/auth-server/v1/callback?workspace=${workspace}&state=${state}`)
   const url = `https://${account}.${publicEndpoint()}/_v/auth-server/v1/login/?workspace=${workspace}&ReturnUrl=${returnUrlEncoded}`
-  opn(url, { wait: false })
+  opn(url, '/usr/bin/chromium-browser')
   return onAuth(account, workspace, state)
 }
 
