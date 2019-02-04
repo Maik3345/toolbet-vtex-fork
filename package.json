@@ -1,6 +1,6 @@
 {
   "name": "vtex-fork",
-  "version": "2.0.1",
+  "version": "2.37.4",
   "description": "The platform for e-commerce apps",
   "main": "lib/index.js",
   "bin": "lib/cli.js",
@@ -86,7 +86,7 @@
     "semver-diff": "^2.1.0",
     "unzip-stream": "^0.3.0",
     "update-notifier": "^2.3.0",
-    "vtex-auto-login": "^0.1.3",
+    "vtex-auto-login": "^0.1.4",
     "winston": "^2.4.0",
     "ws": "^6.0.0",
     "yarn": "^1.9.4"

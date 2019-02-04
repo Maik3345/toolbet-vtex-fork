@@ -95,7 +95,7 @@ export default async (options) => {
     const { login, token } = await authAndSave(account, workspace, optionWorkspace)
     log.debug('Login successful', login, account, token, workspace)
     log.info(`Logged into ${chalk.blue(account)} as ${chalk.green(login)} at workspace ${chalk.green(workspace)}`)
-    process.exit()
+    process.exit(0)
   } catch (err) {
     if (err.statusCode === 404) {
       log.error('Account/Workspace not found')
