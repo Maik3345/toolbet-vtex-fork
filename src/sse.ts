@@ -2,7 +2,7 @@ import chalk from 'chalk'
 import { compose, forEach, path, pathOr } from 'ramda'
 
 import { getToken } from './conf'
-import { endpoint, publicEndpoint } from './env'
+import { endpoint, publicEndpoint, envCookies } from './env'
 import { SSEConnectionError } from './errors'
 import EventSource from './eventsource'
 import log from './logger'
@@ -35,6 +35,7 @@ const createEventSource = (source: string) =>
   new EventSource(source, {
     headers: {
       authorization: `bearer ${getToken()}`,
+      'cookie': envCookies(),
       'user-agent': userAgent,
     },
   })
@@ -100,14 +101,16 @@ export const logAll = (context: Context, logLevel: string, id: string) => {
   })
 }
 
-export const onAuth = (account: string, workspace: string, state: string): Promise<string> => {
-  const source = `https://${workspace}--${account}.${publicEndpoint()}/_v/auth-server/v1/sse/${state}`
+
+export const onAuth = (account: string, workspace: string, state: string, returnUrl: string): Promise<[string, string]> => {
+  const source = `https://${workspace}--${account}.${publicEndpoint()}/_v//private/auth-server/v1/sse/${state}`
   const es = createEventSource(source)
   return new Promise((resolve, reject) => {
     es.onmessage = (msg: MessageJSON) => {
+    log.info("message")
       const { body: token } = JSON.parse(msg.data) as { body: string }
       es.close()
-      resolve(token)
+      resolve([token, returnUrl])
     }
 
     es.onerror = (event) => {

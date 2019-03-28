@@ -1,4 +1,5 @@
 import { Builder, Change } from '@vtex/api'
+import * as retry from 'async-retry'
 import axios from 'axios'
 import chalk from 'chalk'
 import { execSync } from 'child-process-es6-promise'
@@ -11,39 +12,53 @@ import { join, resolve as resolvePath, sep} from 'path'
 import { concat, equals, filter, has, isEmpty, isNil, map, mapObjIndexed, merge, path as ramdaPath, pipe, prop, reject as ramdaReject, test, toPairs, values } from 'ramda'
 import { createInterface } from 'readline'
 import { createClients } from '../../clients'
-import { getAccount, getEnvironment, getWorkspace } from '../../conf'
+import { getAccount, getEnvironment, getToken, getWorkspace } from '../../conf'
+import { publicEndpoint, region } from '../../env'
 import { CommandError } from '../../errors'
 import { getMostAvailableHost } from '../../host'
 import { toAppLocator } from '../../locator'
 import log from '../../logger'
-import { getManifest } from '../../manifest'
+import { getAppRoot, getManifest } from '../../manifest'
 import { listenBuild } from '../build'
 import { formatNano } from '../utils'
 import startDebuggerTunnel from './debugger'
 import { createLinkConfig, getIgnoredPaths, getLinkedDepsDirs, getLinkedFiles, listLocalFiles } from './file'
 import legacyLink from './legacyLink'
-import lint from './lint'
 import { checkBuilderHubMessage, isLinked, pathToFileObject, resolveAppId, showBuilderHubMessage, validateAppAction } from './utils'
 
-const root = process.cwd()
+const root = getAppRoot()
 const DELETE_SIGN = chalk.red('D')
 const UPDATE_SIGN = chalk.blue('U')
 const stabilityThreshold = process.platform === 'darwin' ? 100 : 200
 const AVAILABILITY_TIMEOUT = 1000
 const N_HOSTS = 3
-const builderHubInjectedDepsTimeout = 2000  // 2 seconds
+const builderHubTypingsInfoTimeout = 2000  // 2 seconds
+const typingsPath = 'public/_types'
+const yarnPath = require.resolve('yarn/bin/yarn')
+const typingsURLRegex = /_v\/\w*\/typings/
+const RETRY_OPTS_INITIAL_LINK = {
+  retries: 2,
+  minTimeout: 1000,
+  factor: 2,
+}
+const RETRY_OPTS_DEBUGGER = {
+  retries: 2,
+  minTimeout: 1000,
+  factor: 2,
+}
 
 const resolvePackageJsonPath = (builder: string) => resolvePath(process.cwd(), `${builder}/package.json`)
 
-
-const typingsInfo = async (workspace: string, account: string, environment: string) => {
-  const extension = (environment === 'prod') ? 'myvtex' : 'myvtexdev'
+const typingsInfo = async (workspace: string, account: string) => {
   const http = axios.create({
-    baseURL: `https://${workspace}--${account}.${extension}.com`,
-    timeout: builderHubInjectedDepsTimeout,
+    baseURL: `http://builder-hub.vtex.${region()}.vtex.io/${account}/${workspace}`,
+    timeout: builderHubTypingsInfoTimeout,
+    headers: {
+      'Authorization': getToken(),
+    },
   })
   try {
-    const res = await http.get(`/_v/private/builder/0/typings`)
+    const res = await http.get(`/_v/builder/0/typings`)
     return res.data.typingsInfo
   } catch (e) {
     log.error('Unable to get typings info from vtex.builder-hub.')
@@ -51,17 +66,20 @@ const typingsInfo = async (workspace: string, account: string, environment: stri
   }
 }
 
-const appTypingsURL = async (account: string, workspace: string, environment: string, appName: string, appVersion: string, builder: string): Promise<string> => {
-  const extension = (environment === 'prod') ? 'myvtex' : 'myvtexdev'
+const appTypingsURL = async (account: string, workspace: string, appName: string, appVersion: string, builder: string): Promise<string> => {
   const appId = await resolveAppId(appName, appVersion)
-  const typingsPath = isLinked({'version': appId}) ? 'linked/v1' : 'v1'
-  return `https://${workspace}--${account}.${extension}.com/_v/private/typings/${typingsPath}/${appId}/${builder}`
+  const assetServerPath = isLinked({'version': appId}) ? 'private/typings/linked/v1' : 'public/typings/v1'
+  return `https://${workspace}--${account}.${publicEndpoint()}/_v/${assetServerPath}/${appId}/${typingsPath}/${builder}`
 }
 
-const appsWithTypingsURLs = async (builder: string, account: string, workspace: string, environment: string, appDependencies: Record<string, any>) => {
+const appsWithTypingsURLs = async (builder: string, account: string, workspace: string, appDependencies: Record<string, any>) => {
   const result: Record<string, any> = {}
   for (const [appName, appVersion] of Object.entries(appDependencies)) {
-    result[appName] = await appTypingsURL(account, workspace, environment, appName, appVersion, builder)
+    try {
+      result[appName] = await appTypingsURL(account, workspace, appName, appVersion, builder)
+    } catch (e) {
+      log.error(`Unable to generate typings URL for ${appName}@${appVersion}.`)
+    }
   }
   return result
 }
@@ -69,14 +87,14 @@ const appsWithTypingsURLs = async (builder: string, account: string, workspace: 
 const runYarn = (relativePath: string) => {
   log.info(`Running yarn in ${relativePath}`)
   execSync(
-    join(__dirname, '../../../node_modules/yarn/bin/yarn.js --force'),
+    `${yarnPath} --force`,
     {stdio: 'inherit', cwd: `./${relativePath}`}
   )
   log.info('Finished running yarn')
 }
 
-const getTypings = async (manifest: Manifest, account: string, workspace: string, environment: string) => {
-  const typingsData = await typingsInfo(workspace, account, environment)
+const getTypings = async (manifest: Manifest, account: string, workspace: string) => {
+  const typingsData = await typingsInfo(workspace, account)
 
   const buildersWithInjectedDeps =
     pipe(
@@ -101,42 +119,40 @@ const getTypings = async (manifest: Manifest, account: string, workspace: string
       ramdaReject(isEmpty)
     )(buildersWithInjectedDeps as Record<string, any>)
 
-  const buildersToRunYarn = ramdaReject(isNil,
-    await pipe(
-      mapObjIndexed(
-        // If Yarn should be run in a builder, the following entry will be
-        // present in the object: {`builder`: `builder`}.
-        // If not, this entry will be in the object: {`builder`: null}. These
-        // entries will then be rejected.
-        async (appDeps: Record<string, any>, builder: string) => {
-          const packageJsonPath = resolvePackageJsonPath(builder)
-          if (await pathExists(packageJsonPath)) {
-            const packageJson = await readJson(packageJsonPath)
-            const oldDevDeps = packageJson.devDependencies || {}
-            const oldTypingsEntries = filter(test(/_v\/private\/typings/), oldDevDeps)
-            const newTypingsEntries = await appsWithTypingsURLs(builder, account, workspace, environment, appDeps)
-            if (!equals(oldTypingsEntries, newTypingsEntries)) {
-              const cleanOldDevDeps = ramdaReject(test(/_v\/private\/typings/), oldDevDeps)
-              await outputJson(
-                packageJsonPath,
-                {
-                  ...packageJson,
-                  ...{ 'devDependencies': { ...cleanOldDevDeps, ...newTypingsEntries } },
-                },
-                { spaces: '\t' }
-              )
-              return builder
+  await pipe(
+    mapObjIndexed(
+      async (appDeps: Record<string, any>, builder: string) => {
+        const packageJsonPath = resolvePackageJsonPath(builder)
+        if (await pathExists(packageJsonPath)) {
+          const packageJson = await readJson(packageJsonPath)
+          const oldDevDeps = packageJson.devDependencies || {}
+          const oldTypingsEntries = filter(test(typingsURLRegex), oldDevDeps)
+          const newTypingsEntries = await appsWithTypingsURLs(builder, account, workspace, appDeps)
+          if (!equals(oldTypingsEntries, newTypingsEntries)) {
+            const cleanOldDevDeps = ramdaReject(test(typingsURLRegex), oldDevDeps)
+            await outputJson(
+              packageJsonPath,
+              {
+                ...packageJson,
+                ...{ 'devDependencies': { ...cleanOldDevDeps, ...newTypingsEntries } },
+              },
+              { spaces: '\t' }
+            )
+            try {
+              runYarn(builder)
+            } catch (e) {
+              log.error(`Error running Yarn in ${builder}.`)
+              await outputJson(packageJsonPath, packageJson)  // Revert package.json to original state.
             }
-          }
-          return null
-        }
-      ),
-      values,
-      Promise.all
-    )(buildersWithAppDeps as Record<string, any>)
-  )
 
-  map(runYarn)(buildersToRunYarn)
+          }
+        }
+      }
+    ),
+    values,
+    Promise.all
+  )(buildersWithAppDeps as Record<string, any>)
+
 }
 
 const warnAndLinkFromStart = (appId: string, builder: Builder, extraData: { linkConfig: LinkConfig } = { linkConfig: null }) => {
@@ -177,7 +193,7 @@ const watchAndSendChanges = async (appId: string, builder: Builder, extraData : 
   const moduleAndMetadata = toPairs(extraData.linkConfig.metadata)
 
   const mapLocalToBuiderPath = path => {
-    const abs = resolvePath(path)
+    const abs = resolvePath(root, path)
     for (const [module, modulePath] of moduleAndMetadata) {
       if (abs.startsWith(modulePath)) {
         return abs.replace(modulePath, join('.linked_deps', module))
@@ -208,12 +224,8 @@ const watchAndSendChanges = async (appId: string, builder: Builder, extraData : 
 
   return new Promise((resolve, reject) => {
     watcher
-      .on('add', (file, { size }) => size > 0 ? queueChange(file) : null)
-      .on('change', (file, { size }) => {
-        return size > 0
-          ? queueChange(file)
-          : queueChange(file, true)
-      })
+      .on('add', file => queueChange(file))
+      .on('change', file => queueChange(file))
       .on('unlink', file => queueChange(file, true))
       .on('error', reject)
       .on('ready', resolve)
@@ -221,12 +233,7 @@ const watchAndSendChanges = async (appId: string, builder: Builder, extraData : 
 }
 
 const performInitialLink = async (appId: string, builder: Builder, extraData : {linkConfig : LinkConfig}): Promise<void> => {
-  const [linkConfig , stickyHint] = await Promise.all([
-    createLinkConfig(root),
-    getMostAvailableHost(appId, builder, N_HOSTS, AVAILABILITY_TIMEOUT),
-  ])
-
-  const linkOptions = { sticky: true, stickyHint }
+  const linkConfig = await createLinkConfig(root)
 
   extraData.linkConfig = linkConfig
 
@@ -238,31 +245,50 @@ const performInitialLink = async (appId: string, builder: Builder, extraData : {
     log.info(`If you don\'t want ${plural ? 'them' : 'it'} to be used by your vtex app, please unlink ${plural ? 'them' : 'it'}`)
   }
 
-  const [localFiles, linkedFiles] =
-    await Promise.all([
-      listLocalFiles(root).then(paths => map(pathToFileObject(root), paths)),
-      getLinkedFiles(linkConfig),
-    ])
-  const filesWithContent = concat(localFiles, linkedFiles) as BatchStream[]
+  const linkApp = async (bail: any, tryCount: number) => {
+    // wrapper for builder.linkApp to be used with the retry function below.
+    const [localFiles, linkedFiles] =
+      await Promise.all([
+        listLocalFiles(root).then(paths => map(pathToFileObject(root), paths)),
+        getLinkedFiles(linkConfig),
+      ])
+    const filesWithContent = concat(localFiles, linkedFiles) as BatchStream[]
 
-  const linkedFilesInfo = linkedFiles.length ? `(${linkedFiles.length} from linked node modules)` : ''
-  log.info(`Sending ${filesWithContent.length} file${filesWithContent.length > 1 ? 's' : ''} ${linkedFilesInfo}`)
-  log.debug('Sending files')
-  filesWithContent.forEach(p => log.debug(p.path))
-
-  try {
-    const { code } = await builder.linkApp(appId, filesWithContent, linkOptions)
-    if (code !== 'build.accepted') {
-      throw new Error('Please, update your builder-hub to the latest version!')
+    if (tryCount === 1) {
+      const linkedFilesInfo = linkedFiles.length ? `(${linkedFiles.length} from linked node modules)` : ''
+      log.info(`Sending ${filesWithContent.length} file${filesWithContent.length > 1 ? 's' : ''} ${linkedFilesInfo}`)
+      log.debug('Sending files')
+      filesWithContent.forEach(p => log.debug(p.path))
     }
-  } catch (e) {
-    const data = e.response && e.response.data
-    if (data && data.code && data.code === 'build_in_progress') {
-      log.warn(`Build for ${appId} is already in progress`)
-    } else {
-      throw e
+
+    if (tryCount > 1) {
+      log.info(`Retrying...${tryCount-1}`)
+    }
+
+    const stickyHint = await getMostAvailableHost(appId, builder, N_HOSTS, AVAILABILITY_TIMEOUT)
+    const linkOptions = { sticky: true, stickyHint }
+    try {
+      const { code } = await builder.linkApp(appId, filesWithContent, linkOptions)
+      if (code !== 'build.accepted') {
+        bail(new Error('Please, update your builder-hub to the latest version!'))
+      }
+    } catch (err) {
+      const response = err.response
+      const status = response.status
+      const data = response && response.data
+      const message = data.message
+      const statusMessage = status ? `: Status ${status}` : ''
+      log.error(`Error linking app${statusMessage} (try: ${tryCount})`)
+      if (message) {
+        log.error(`Message: ${message}`)
+      }
+      if (status && status < 500) {
+        return
+      }
+      throw err
     }
   }
+  await retry(linkApp, RETRY_OPTS_INITIAL_LINK)
 }
 
 export default async (options) => {
@@ -274,21 +300,14 @@ export default async (options) => {
   }
 
   if (manifest.builders.render
-    || manifest.builders['functions-ts']
-    || manifest.name === 'builder-hub') {
+    || manifest.builders['functions-ts']) {
     return legacyLink(options)
-  }
-
-  try {
-    await lint(root)
-  } catch (e) {
-    log.error('Failed to copy eslint setup')
   }
 
   const appId = toAppLocator(manifest)
   const context = { account: getAccount(), workspace: getWorkspace(), environment: getEnvironment() }
   if (options.install || options.i) {
-    await getTypings(manifest, context.account, context.workspace, context.environment)
+    await getTypings(manifest, context.account, context.workspace)
   }
   const { builder } = createClients(context, { timeout: 60000 })
 
@@ -308,10 +327,19 @@ export default async (options) => {
     if (debuggerStarted) {
       return
     }
-    debuggerStarted = true
-    const debuggerPort = await startDebuggerTunnel(manifest)
-    if (debuggerPort) {
+    const startDebugger = async () => {
+      const port = await startDebuggerTunnel(manifest)
+      if (!port) {
+        throw new Error('Failed to start debugger.')
+      }
+      return port
+    }
+    try {
+      const debuggerPort = await retry(startDebugger, RETRY_OPTS_DEBUGGER)
+      debuggerStarted = true
       log.info(`Debugger tunnel listening on ${chalk.green(`:${debuggerPort}`)}. Go to ${chalk.blue('chrome://inspect')} in Google Chrome to debug your running application.`)
+    } catch (e) {
+      log.error(e.message)
     }
   }
 
@@ -322,8 +350,11 @@ export default async (options) => {
   try {
     const buildTrigger = performInitialLink.bind(this, appId, builder, extraData)
     const [subject] = appId.split('@')
-    const { unlisten } = await listenBuild(subject, buildTrigger, { waitCompletion: false, onBuild, onError })
-    unlistenBuild = unlisten
+    if (options.watch === false) {
+      await listenBuild(subject, buildTrigger, { waitCompletion: true })
+      return
+    }
+    unlistenBuild = await listenBuild(subject, buildTrigger, { waitCompletion: false, onBuild, onError }).then(prop('unlisten'))
   } catch (e) {
     if (e.response) {
       const { data } = e.response
@@ -332,7 +363,7 @@ export default async (options) => {
       }
 
       if (data.code === 'link_on_production') {
-        throw new CommandError(`Please remove your workspace from production (${chalk.blue('vtex workspace production false')}) to enable app linking`)
+        throw new CommandError(`Please use a dev workspace to link apps. Create one with (${chalk.blue('vtex use <workspace> -rp')}) to be able to link apps`)
       }
     }
     throw e

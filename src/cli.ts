@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import 'any-promise/register/bluebird'
+import axios from 'axios'
 import * as Bluebird from 'bluebird'
 import chalk from 'chalk'
 import { all as clearCachedModules } from 'clear-module'
@@ -9,13 +10,20 @@ import * as moment from 'moment'
 import * as path from 'path'
 import { reject, without } from 'ramda'
 import { isFunction } from 'ramda-adjunct'
-
 import * as pkg from '../package.json'
 import { getToken } from './conf'
+import { envCookies } from './env'
 import { CommandError, SSEConnectionError, UserCancelledError } from './errors'
 import log from './logger'
 import tree from './modules/tree'
 import notify from './update'
+
+axios.interceptors.request.use(config => {
+  if (envCookies()) {
+    config.headers.Cookie = `${envCookies()}; ${config.headers.Cookie || ''}`
+  }
+  return config
+})
 
 global.Promise = Bluebird
 Bluebird.config({
@@ -63,7 +71,7 @@ const hasValidToken = (): boolean => {
 
 const checkLogin = args => {
   const first = args[0]
-  const whitelist = [undefined, 'login', 'logout', 'switch', 'whoami', 'init', '-v', '--version']
+  const whitelist = [undefined, 'config', 'login', 'logout', 'switch', 'whoami', 'init', '-v', '--version', 'release']
   if (!hasValidToken() && whitelist.indexOf(first) === -1) {
     log.debug('Requesting login before command:', args.join(' '))
     return run({ command: loginCmd })
@@ -140,7 +148,7 @@ const onError = e => {
           log.error(`${e.config.method} ${e.config.url}`)
         }
         if (isVerbose) {
-          log.error(reject(isFunction, e))
+          log.error(e)
         }
     }
   } else {
@@ -164,10 +172,13 @@ const onError = e => {
         break
       default:
         log.error('Something went wrong, I don\'t know what to do :(')
-        log.error(reject(isFunction, e))
+        if (isVerbose) {
+          log.error(e)
+        } else {
+          log.error(reject(isFunction, e))
+        }
     }
   }
-
   process.exit(1)
 }
 

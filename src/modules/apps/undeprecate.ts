@@ -2,13 +2,13 @@ import axios from 'axios'
 import { AxiosResponse } from 'axios'
 import * as Bluebird from 'bluebird'
 import chalk from 'chalk'
-import * as inquirer from 'inquirer'
-import { head, prepend, prop, tail } from 'ramda'
-import { getAccount, getToken, getWorkspace } from '../../conf'
+import { head, prepend, tail } from 'ramda'
+import { getAccount, getToken, getWorkspace, Region } from '../../conf'
 import { UserCancelledError } from '../../errors'
 import log from '../../logger'
 import { getManifest, validateApp } from '../../manifest'
 import switchAccount from '../auth/switch'
+import { promptConfirm } from '../utils'
 import { parseLocator, toAppLocator } from './../../locator'
 import { parseArgs, switchAccountMessage } from './utils'
 
@@ -21,20 +21,12 @@ const switchToVendorMessage = (vendor: string): string => {
 }
 
 const promptUndeprecate = (appsList: string[]): Bluebird<boolean> =>
-  inquirer.prompt({
-    message: `Are you sure you want to undeprecate app` + (appsList.length > 1 ? 's' : '') + ` ${chalk.green(appsList.join(', '))}?`,
-    name: 'confirm',
-    type: 'confirm',
-  })
-    .then<boolean>(prop('confirm'))
+  promptConfirm(
+    `Are you sure you want to undeprecate app` + (appsList.length > 1 ? 's' : '') + ` ${chalk.green(appsList.join(', '))}?`
+  )
 
 const promptUndeprecateOnVendor = (msg: string): Bluebird<boolean> =>
-  inquirer.prompt({
-    message: msg,
-    name: 'confirm',
-    type: 'confirm',
-  })
-    .then<boolean>(prop('confirm'))
+  promptConfirm(msg)
 
 const switchToPreviousAccount = async (previousAccount: string, previousWorkspace: string) => {
   const currentAccount = getAccount()
@@ -62,15 +54,14 @@ const undeprecateApp = async (app: string): Promise<AxiosResponse> => {
   // `undeprecateApp` method in node-vtex-api and upgrade the library version
   // used in this project.
   const http = axios.create({
-    baseURL: `http://apps.aws-us-east-1.vtex.io/`,
+    baseURL: `http://apps.${Region.Production}.vtex.io/`,
     timeout: undeprecateRequestTimeOut,
     headers: {
       'Authorization': getToken(),
       'Content-Type': 'application/json',
     },
   })
-  const finalroute = `http://apps.aws-us-east-1.vtex.io/${vendor}/master/registry/${vendor}.${name}/${version}`
-  console.log(finalroute)
+  const finalroute = `http://apps.${Region.Production}.vtex.io/${vendor}/master/registry/${vendor}.${name}/${version}`
   return await http.patch(finalroute, {deprecated: false})
 }
 

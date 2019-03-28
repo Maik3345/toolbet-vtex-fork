@@ -16,6 +16,12 @@ export default {
       requiredArgs: ['name', 'value'],
     },
   },
+  browse: {
+    admin: {
+      description: 'Open admin in browser window',
+      handler: './browse/admin',
+    },
+  },
   deprecate: {
     description: 'Deprecate app(s)',
     handler: './apps/deprecate',
@@ -50,6 +56,11 @@ export default {
       description: 'Update all workspace dependencies or a specific app@version',
       handler: './deps/update',
       optionalArgs: ['app'],
+    },
+    diff: {
+      description: 'Diff between workspace dependencies',
+      handler: './deps/diff',
+      optionalArgs: ['workspace1', 'workspace2'],
     },
   },
   handler: './',
@@ -110,20 +121,17 @@ export default {
         short: 'i',
         type: 'boolean',
       },
+      {
+        description: `Don't watch for file changes after initial link`,
+        long: 'no-watch',
+        type: 'boolean',
+      },
     ],
   },
   list: {
     alias: 'ls',
     description: 'List your installed VTEX apps',
     handler: './apps/list',
-    options: [
-      {
-        description: 'Short version, without table lines',
-        long: 'short',
-        short: 's',
-        type: 'boolean',
-      },
-    ],
   },
   local: {
     manifest: {
@@ -184,7 +192,7 @@ export default {
     },
   },
   production: {
-    description: 'Set this workspace\'s production mode to true or false',
+    description: 'Set this workspace\'s production mode to true or false (deprecated)',
     handler: './workspace/production',
     optionalArgs: 'production',
   },
@@ -274,11 +282,27 @@ export default {
   update: {
     description: 'Update all installed apps to the latest version',
     handler: './apps/update',
+    options: [
+      {
+        description: 'Update to newest majors',
+        long: 'major',
+        short: 'm',
+        type: 'boolean',
+      },
+    ],
   },
   use: {
     description: 'Use a workspace to perform operations',
     handler: './workspace/use',
     requiredArgs: 'name',
+    options: [
+      {
+        description: 'If workspace does not exist, whether to create it as a production workspace',
+        long: 'production',
+        short: 'p',
+        type: 'boolean',
+      },
+    ],
   },
   whoami: {
     description: 'See your credentials current status',
@@ -289,6 +313,14 @@ export default {
       description: 'Create a new workspace with this name',
       handler: './workspace/create',
       requiredArgs: 'name',
+      options: [
+        {
+          description: 'Create a production workspace',
+          long: 'production',
+          short: 'p',
+          type: 'boolean',
+        },
+      ],
     },
     delete: {
       description: 'Delete a single or various workspaces',
@@ -321,7 +353,7 @@ export default {
       handler: './workspace/list',
     },
     production: {
-      description: 'Set this workspace\'s production mode to true or false',
+      description: 'Set this workspace\'s production mode to true or false (deprecated)',
       handler: './workspace/production',
       optionalArgs: 'production',
     },
@@ -332,6 +364,19 @@ export default {
     reset: {
       description: 'Delete and create a workspace',
       handler: './workspace/reset',
+      optionalArgs: 'name',
+      options: [
+        {
+          description: 'Whether to re-create the workspace as a production one',
+          long: 'production',
+          short: 'p',
+          type: 'boolean',
+        },
+      ],
+    },
+    status: {
+      description: 'Display information about a workspace',
+      handler: './workspace/status',
       optionalArgs: 'name',
     },
     test: {
@@ -349,8 +394,19 @@ export default {
           short: 'r',
           type: 'boolean',
         },
+        {
+          description: 'Whether to create the workspace as production if it does not exist or is reset',
+          long: 'production',
+          short: 'p',
+          type: 'boolean',
+        },
       ],
       requiredArgs: 'name',
     },
+  },
+  release: {
+    description: 'Bump app version, commit and push to remote. Only for git users',
+    handler: './release',
+    optionalArgs: ['releaseType', 'tagName'],
   },
 }
